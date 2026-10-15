@@ -24,7 +24,7 @@ test("the extension registers its tools, command and lifecycle hooks", async () 
 
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["job_start", "job_read", "job_list", "job_cancel"],
+		["bash", "job_start", "job_read", "job_list", "job_cancel"],
 	);
 	for (const tool of tools) {
 		assert.equal(typeof tool.description, "string", `${tool.name} needs a description`);
@@ -35,6 +35,8 @@ test("the extension registers its tools, command and lifecycle hooks", async () 
 
 	const start = tools.find((tool) => tool.name === "job_start");
 	assert.ok(start.promptGuidelines?.[0]?.includes("on_done"), "job_start must steer the model");
+	const bash = tools.find((tool) => tool.name === "bash");
+	assert.match(bash.description, /moved to the background/, "bash must announce the takeover");
 
 	assert.deepEqual(commands, ["job"]);
 	assert.ok(events.includes("session_start"));

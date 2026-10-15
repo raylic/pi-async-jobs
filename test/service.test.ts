@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { OutputBuffer } from "../buffer.ts";
 import { resolveConfig } from "../config.ts";
 import { JobRegistry } from "../registry.ts";
 import { JobService } from "../service.ts";
@@ -192,4 +193,44 @@ test("shutdown kills every job and empties the registry", async () => {
 	assert.equal(runner.killAllCalled, true);
 	assert.equal(runner.handles.every((handle) => handle.killed), true);
 	assert.equal(registry.size(), 0);
+});
+
+test("adopt registers an already-running process and settles it normally", async () => {
+	const { service, registry, settled } = setup();
+	const buffer = new OutputBuffer({});
+	buffer.append(Buffer.from("taken over mid-flight"));
+	const handle = new FakeHandle();
+
+	const entry = service.adopt({
+		spec: { command: "npm run build", cwd: "/work", onDone: "no intent" },
+		buffer,
+		handle: handle as never,
+		startedAt: 900_000,
+	});
+
+	assert.equal(entry.record.status, "running");
+	assert.equal(entry.record.pid, 4242);
+	assert.equal(entry.record.startedAt, 900_000, "the original start time is preserved");
+	assert.equal(registry.runningCount(), 1);
+	assert.match(service.view(entry.record.id)!.snapshot.output, /taken over/);
+
+	handle.finish(0);
+	await flush();
+	assert.equal(registry.get(entry.record.id)!.record.status, "exited");
+	assert.deepEqual(settled, [entry.record.id]);
+	await buffer.dispose();
+});
+
+test("adopt bypasses the concurrency gate", () => {
+	const { service } = setup({ maxConcurrent: 1 });
+	start(service, "a");
+	assert.equal(service.start({ command: "b", cwd: "/work", onDone: "x" }).ok, false);
+
+	const entry = service.adopt({
+		spec: { command: "b", cwd: "/work", onDone: "x" },
+		buffer: new OutputBuffer({}),
+		handle: new FakeHandle() as never,
+		startedAt: 1,
+	});
+	assert.equal(entry.record.id, "j2", "a running process is never refused");
 });

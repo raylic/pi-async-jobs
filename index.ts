@@ -11,11 +11,17 @@
  * only this file imports the pi runtime, which keeps the rest unit-testable.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	createBashToolDefinition,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { createBashBridge, extractDetachedJobId, formatBackgroundedResult, AUTO_BACKGROUND_ON_DONE } from "./bashbridge.ts";
 import { formatSize } from "./buffer.ts";
 import { resolveConfig, type JobConfig } from "./config.ts";
+import { buildBlockReason, SlowCommandGuard } from "./intercept.ts";
 import { JobRegistry } from "./registry.ts";
 import { ProcessRunner } from "./runner.ts";
 import { JobService, type JobView } from "./service.ts";
@@ -120,6 +126,68 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 	const remember = (ctx: ExtensionContext): void => {
 		latestCtx = ctx;
 	};
+
+	// --- Interception (before a long command runs) --------------------------
+	// Narrow whitelist: fires only where the model should already have known the
+	// command is slow. The retry passes through, which prevents a block loop.
+	const slowGuard = new SlowCommandGuard({
+		patterns: config.slowCommandPatterns,
+		memoMs: config.interceptMemoMs,
+	});
+
+	pi.on("tool_call", (event) => {
+		if (!config.interceptSlowCommands) return undefined;
+		if (event.toolName !== "bash") return undefined;
+		const command = String(event.input?.command ?? "");
+		const rule = slowGuard.shouldBlock(command, { nested: event.parentToolCallId !== undefined });
+		if (!rule) return undefined;
+		return { block: true, reason: buildBlockReason(rule, command) };
+	});
+
+	// --- Takeover (while a command is running) ------------------------------
+	// The safety net: anything still running after `detachAfterMs` becomes a job,
+	// with the bash result shape preserved for codemode and other callers.
+	const bridge = createBashBridge({
+		runner,
+		detachAfterMs: config.detachAfterMs,
+		maxLines: config.maxLines,
+		maxBytes: config.maxBytes,
+		adopt: (request) =>
+			service.adopt({
+				spec: { command: request.command, cwd: request.cwd, onDone: AUTO_BACKGROUND_ON_DONE },
+				buffer: request.buffer,
+				handle: request.handle,
+				startedAt: request.startedAt,
+			}).record.id,
+	});
+
+	const bashBase = createBashToolDefinition(process.cwd(), { operations: bridge });
+
+	pi.registerTool({
+		...bashBase,
+		description: `${bashBase.description} A command still running after ${Math.round(config.detachAfterMs / 1000)} seconds is moved to the background automatically, and you are told its job id.`,
+		promptGuidelines: [
+			...(bashBase.promptGuidelines ?? []),
+			`A bash command still running after ${Math.round(config.detachAfterMs / 1000)} seconds is moved to the background automatically: you get a job id instead of output, your turn is not blocked, and the result arrives as a new message. Do not try to work around this.`,
+		],
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const startedAt = Date.now();
+			try {
+				return await bashBase.execute(toolCallId, params, signal, onUpdate, ctx);
+			} catch (error) {
+				const jobId = error instanceof Error ? extractDetachedJobId(error.message) : undefined;
+				// Not a takeover: behave exactly like the built-in bash tool.
+				if (!jobId) throw error;
+				statusPublisher.refresh();
+				return formatBackgroundedResult({
+					jobId,
+					command: params.command,
+					detachAfterMs: config.detachAfterMs,
+					elapsedMs: Date.now() - startedAt,
+				});
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "job_start",

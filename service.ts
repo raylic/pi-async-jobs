@@ -35,6 +35,15 @@ export interface JobView {
   snapshot: OutputSnapshot;
 }
 
+/** An already-running process handed over by the bash timeout takeover. */
+export interface AdoptedJobInput {
+  spec: JobSpec;
+  buffer: OutputBuffer;
+  handle: RunningProcess;
+  /** When the process was actually started, which precedes the adoption. */
+  startedAt: number;
+}
+
 export function clampText(text: string, maxBytes: number): string {
   const buffer = Buffer.from(text, "utf-8");
   if (buffer.length <= maxBytes) return text;
@@ -64,7 +73,6 @@ export class JobService {
       };
     }
 
-    const id = `${this.deps.idPrefix ?? "j"}${++this.counter}`;
     const buffer = new OutputBuffer({
       maxLines: this.deps.config.maxLines,
       maxBytes: this.deps.config.maxBytes,
@@ -81,6 +89,20 @@ export class JobService {
       return { ok: false, reason: `无法启动进程: ${reason}` };
     }
 
+    return { ok: true, entry: this.track(spec, buffer, handle, this.now()) };
+  }
+
+  /**
+   * Register a process that is already running (the bash timeout takeover).
+   * The concurrency gate is deliberately bypassed: refusing would mean killing a
+   * command the user asked for, and the process exists either way.
+   */
+  adopt(input: AdoptedJobInput): JobEntry {
+    return this.track(input.spec, input.buffer, input.handle, input.startedAt);
+  }
+
+  private track(spec: JobSpec, buffer: OutputBuffer, handle: RunningProcess, startedAt: number): JobEntry {
+    const id = `${this.deps.idPrefix ?? "j"}${++this.counter}`;
     const record: JobRecord = {
       id,
       command: spec.command,
@@ -88,7 +110,7 @@ export class JobService {
       onDone: clampText(spec.onDone, this.deps.config.onDoneMaxBytes),
       label: spec.label,
       pid: handle.pid,
-      startedAt: this.now(),
+      startedAt,
       status: "running",
       announced: false,
     };
@@ -116,7 +138,7 @@ export class JobService {
       if (settled) this.deps.onSettled?.(id);
     });
 
-    return { ok: true, entry };
+    return entry;
   }
 
   view(id: string): JobView | undefined {
