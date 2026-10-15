@@ -1,0 +1,15 @@
+{
+  "name": "pi-extension-async-jobs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Background jobs for pi: start a long-running command, keep the conversation free, get woken with the result.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  }
+}
