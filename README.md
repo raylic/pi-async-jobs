@@ -36,6 +36,20 @@ job_start({ command: "npm run build", on_done: "read the output and deploy to st
 | `/job` or `/job list` | Show running/finished jobs in the TUI. |
 | `/job cancel <id>` | User-initiated cancel. |
 
+## What you see in the UI
+
+| When | Where |
+|---|---|
+| A job is running | Footer: `⚙ j1 运行中: npm run build`, or `⚙ 3 个任务运行中 (j1 j2 j3)`. Cleared when nothing runs. |
+| A job finishes | A `[job_done]` message block in the transcript with the command, `on_done` and a fenced output preview. |
+| Any tool call | A normal tool row (`job_start`, `job_read`, …). |
+| `/job` | A transient notification listing the jobs. |
+
+The footer is **event-driven**: it refreshes when a job starts, settles or is
+cancelled, and never runs a timer. That is why it omits elapsed time — a value
+that only updates on events would look live while being stale. Use `/job` for a
+list with fresh elapsed times.
+
 ## Why `on_done` exists
 
 In JavaScript, `const r = await build(); deploy(r)` works because the engine
@@ -81,6 +95,7 @@ registry.ts  JobRegistry: state machine + the atomic announce() claim
 runner.ts    ProcessRunner: spawn, process-group kill, timeouts
 buffer.ts    OutputBuffer: bounded rolling tail + spill-to-file
 waker.ts     WakeScheduler: when to deliver, and the message format
+status.ts    StatusPublisher: footer status line
 config.ts    defaults
 types.ts     shared types
 ```
@@ -126,12 +141,12 @@ Optional, via `asyncJobs` in settings (all values have defaults):
 ## Tests
 
 ```sh
-npm test          # node --test test/*.test.ts  (45 tests)
+npm test          # node --test test/*.test.ts  (51 tests)
 ```
 
 Covers the buffer (truncation, spill, multibyte splits), the registry state
 machine, the runner (including that cancel kills the whole process *group*),
-the wake scheduler (batching, abort handling, exactly-once delivery) and the
-service (concurrency gate, idempotent cancel). `index.smoke.test.ts` loads the
-composition root with a stubbed `typebox` via a resolve hook and asserts the
-registered surface.
+the wake scheduler (batching, abort handling, exactly-once delivery), the
+service (concurrency gate, idempotent cancel) and the footer status line.
+`index.smoke.test.ts` loads the composition root with a stubbed `typebox` via a
+resolve hook and asserts the registered surface, including the footer update.

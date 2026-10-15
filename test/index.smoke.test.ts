@@ -54,13 +54,23 @@ test("job_start reports a started job and job_read lists it", async () => {
 	};
 	mod.default(fakePi);
 
-	const ctx: any = { cwd: process.cwd(), isIdle: () => true };
+	const statuses: (string | undefined)[] = [];
+	const ctx: any = {
+		cwd: process.cwd(),
+		isIdle: () => true,
+		hasUI: true,
+		ui: { setStatus: (_key: string, text: string | undefined) => statuses.push(text) },
+	};
 	const started = await tools.get("job_start").execute("call-1", {
 		command: "printf background",
 		on_done: "read the output",
 	}, undefined, undefined, ctx);
 	assert.equal(started.details.ok, true);
 	assert.match(started.content[0].text, /任务已启动/);
+	assert.ok(
+		statuses.some((text) => text?.includes("j1")),
+		"the footer should announce the running job",
+	);
 
 	const listed = await tools.get("job_list").execute("call-2", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /j1/);
@@ -68,4 +78,5 @@ test("job_start reports a started job and job_read lists it", async () => {
 	// Let the background process finish so nothing is left behind.
 	await new Promise((resolve) => setTimeout(resolve, 100));
 	await tools.get("job_cancel").execute("call-3", { id: "j1" }, undefined, undefined, ctx);
+	assert.equal(statuses.at(-1), undefined, "the footer should be cleared once nothing runs");
 });

@@ -19,6 +19,7 @@ import { resolveConfig, type JobConfig } from "./config.ts";
 import { JobRegistry } from "./registry.ts";
 import { ProcessRunner } from "./runner.ts";
 import { JobService, type JobView } from "./service.ts";
+import { StatusPublisher, STATUS_KEY } from "./status.ts";
 import type { JobRecord } from "./types.ts";
 import { formatDuration, WakeScheduler } from "./waker.ts";
 
@@ -85,6 +86,15 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 	const runner = new ProcessRunner({ graceMs: config.sigtermGraceMs });
 	let latestCtx: ExtensionContext | undefined;
 
+	// Footer status. Event-driven only (no timer), and guarded by `hasUI` so RPC,
+	// JSON and print modes never touch UI they do not have.
+	const statusPublisher = new StatusPublisher({
+		records: () => registry.all().map((entry) => entry.record),
+		sink: (text) => {
+			if (latestCtx?.hasUI) latestCtx.ui.setStatus(STATUS_KEY, text);
+		},
+	});
+
 	const waker = new WakeScheduler({
 		pending: () => registry.pending(),
 		announce: (id) => registry.announce(id),
@@ -101,7 +111,10 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 		registry,
 		runner,
 		config,
-		onSettled: () => waker.noteSettled(),
+		onSettled: () => {
+			waker.noteSettled();
+			statusPublisher.refresh();
+		},
 	});
 
 	const remember = (ctx: ExtensionContext): void => {
@@ -143,6 +156,7 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 				};
 			}
 			const record = result.entry.record;
+			statusPublisher.refresh();
 			const text = [
 				`任务已启动: ${record.id} (pid ${record.pid})`,
 				`命令: ${record.command}`,
@@ -216,6 +230,7 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 				};
 			}
 			const record = result.record;
+			statusPublisher.refresh();
 			const text =
 				record?.status === "cancelled"
 					? `已取消 ${record.id}（整个进程树已终止）。`
@@ -244,6 +259,7 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 					return;
 				}
 				const result = await service.cancel(id, "user");
+				statusPublisher.refresh();
 				ctx.ui.notify(
 					result.ok ? `已取消 ${id}` : `取消失败: ${result.reason}`,
 					result.ok ? "info" : "error",
@@ -256,6 +272,7 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		remember(ctx);
+		statusPublisher.refresh();
 	});
 
 	pi.on("agent_before_settle", (event, ctx) => {
@@ -277,6 +294,8 @@ export default function asyncJobsExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		waker.dispose();
+		// Clear while the context is still valid; setStatus needs a live UI.
+		statusPublisher.clear();
 		latestCtx = undefined;
 		await service.shutdown();
 	});
